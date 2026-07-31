@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyTitle>Patchcord Installer</AssemblyTitle>
+    <AssemblyName>PatchcordInstaller</AssemblyName>
+    <RootNamespace>PatchcordInstaller</RootNamespace>
+    <Version>2.0.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <Optimize>true</Optimize>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSingleFile>true</IncludeNativeLibrariesForSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>embedded</DebugType>
+    <!-- Skip bundling non-English satellite resource assemblies -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <Company>itssolar.dev</Company>
+    <Product>Patchcord Installer</Product>
+    <Copyright>© 2026 itssolar.dev</Copyright>
+    <Description>Patchcord Discord client mod installer</Description>
+  </PropertyGroup>
+
+  <!-- XAML files are auto-included by SDK when UseWPF is true -->
+
+  <ItemGroup>
+    <Resource Include="assets\logo-x32.png"/>
+    <Resource Include="assets\logo-x64.png"/>
+  </ItemGroup>
+
+</Project>
