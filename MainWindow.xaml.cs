@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Windows.Data;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
@@ -56,12 +57,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public string LastPatchedStr { get => _lastPatchedStr; set { _lastPatchedStr = value; OnPropertyChanged(nameof(LastPatchedStr)); } }
 
     private DispatcherTimer _procTimer;
+    private ICollectionView _clientsView = null!;
+    private string _searchText = "";
 
     public MainWindow()
     {
         InitializeComponent();
         DataContext = this;
-        LB_Clients.ItemsSource = Clients;
+
+        _clientsView = CollectionViewSource.GetDefaultView(Clients);
+        _clientsView.Filter = FilterClient;
+        LB_Clients.ItemsSource = _clientsView;
+
         LB_Procs.ItemsSource = Processes;
         LogItems.ItemsSource = ActionLogs;
         
@@ -69,8 +76,31 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _procTimer.Tick += (_, _) => RefreshProcesses();
     }
 
+    private bool FilterClient(object obj)
+    {
+        if (string.IsNullOrWhiteSpace(_searchText)) return true;
+        if (obj is not InstallEntry entry) return true;
+        return entry.Label.Contains(_searchText, StringComparison.OrdinalIgnoreCase)
+            || entry.StatusLabel.Contains(_searchText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void TB_Search_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        _searchText = TB_Search.Text;
+        TB_SearchPlaceholder.Visibility = string.IsNullOrEmpty(_searchText) ? Visibility.Visible : Visibility.Collapsed;
+        _clientsView.Refresh();
+    }
+
+    private void CB_SelectAll_Click(object sender, RoutedEventArgs e)
+    {
+        bool select = CB_SelectAll.IsChecked == true;
+        foreach (var entry in Clients) entry.IsSelected = select;
+        _clientsView.Refresh();
+    }
+
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
+        Txt_FooterVersion.Text = $"v{GetCurrentVersion().ToString(3)}";
         RefreshClients();
         _procTimer.Start();
         await CheckForUpdatesAsync();
@@ -80,11 +110,48 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void TitleBar_MouseDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ChangedButton == MouseButton.Left) DragMove();
+        if (e.ChangedButton != MouseButton.Left) return;
+        if (e.ClickCount == 2) { ToggleMaximize(); return; }
+
+        // Maximized windows shouldn't be dragged directly; restore first so the
+        // cursor lands at a sane spot on the now-smaller window, matching native behavior.
+        if (WindowState == WindowState.Maximized)
+        {
+            var mouse = PointToScreen(e.GetPosition(this));
+            WindowState = WindowState.Normal;
+            Left = mouse.X - (RestoreBounds.Width / 2);
+            Top = mouse.Y - 20;
+        }
+        DragMove();
     }
 
     private void Btn_Close_Click(object sender, RoutedEventArgs e) => WpfApplication.Current.Shutdown();
     private void Btn_Min_Click(object sender, RoutedEventArgs e)   => WindowState = WindowState.Minimized;
+    private void Btn_Max_Click(object sender, RoutedEventArgs e)   => ToggleMaximize();
+
+    private void ToggleMaximize()
+        => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    private void Window_StateChanged(object sender, EventArgs e)
+    {
+        if (WindowState == WindowState.Maximized)
+        {
+            // AllowsTransparency windows overhang the screen edges by the window
+            // border/margin when maximized; pull that back in and square off the
+            // corners so the content isn't clipped by the monitor bounds.
+            WindowRoot.Margin = new Thickness(7);
+            WindowRoot.CornerRadius = new CornerRadius(0);
+            WindowShadow.Opacity = 0;
+            MaxIcon.Data = Geometry.Parse("M6,4H4V22H20V4H6M18,20H6V6H18V20M8,8H16V16H8V8Z");
+        }
+        else
+        {
+            WindowRoot.Margin = new Thickness(12);
+            WindowRoot.CornerRadius = new CornerRadius(20);
+            WindowShadow.Opacity = 0.75;
+            MaxIcon.Data = Geometry.Parse("M4,4H20V20H4V4M6,8V18H18V8H6Z");
+        }
+    }
 
     private void Nav_Changed(object sender, RoutedEventArgs e)
     {
@@ -150,6 +217,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         DiskFootprintStr = totalDisk > 0 ? $"{totalDisk / 1024 / 1024} MB" : "0 MB";
         LastPatchedStr = lastPatched > DateTime.MinValue ? lastPatched.ToString("g") : "Never";
+
+        Txt_EmptyState.Visibility = Clients.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        CB_SelectAll.IsChecked = false;
+        _clientsView.Refresh();
     }
 
     private static string? FindLatestAppDir(string baseDir)
@@ -310,6 +381,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             WpfMessageBox.Show("Please select at least one Discord client to modify.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
+
+        var verb = install ? "patch" : "uninstall the patch from";
+        var confirm = WpfMessageBox.Show(
+            $"You're about to {verb} {selected.Count} Discord install(s):\n\n" +
+            string.Join("\n", selected.Select(c => $"  •  {c.Label}")) +
+            "\n\nAll running Discord processes will be closed first. Continue?",
+            install ? "Confirm Patch" : "Confirm Uninstall",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
 
         string asarSource = "";
         bool deleteSource = false;
@@ -611,7 +692,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     }
 }
 
-public class InstallEntry
+public class InstallEntry : INotifyPropertyChanged
 {
     public required string Label { get; set; }
     public required string ResourcesDir { get; set; }
@@ -619,7 +700,15 @@ public class InstallEntry
     public required string StatusLabel { get; set; }
     public SolidColorBrush? BadgeBg { get; set; }
     public SolidColorBrush? BadgeFg { get; set; }
-    public bool IsSelected { get; set; }
+
+    private bool _isSelected;
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set { _isSelected = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelected))); }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 }
 
 public class DiscordProcess
