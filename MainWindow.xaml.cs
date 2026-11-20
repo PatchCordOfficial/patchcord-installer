@@ -12,17 +12,11 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input;
-using System.Windows.Media.Effects;
-using MouseEventArgs = System.Windows.Input.MouseEventArgs;
 using Color = System.Windows.Media.Color;
 using WinForms = System.Windows.Forms;
 using WpfApplication = System.Windows.Application;
 using WpfMessageBox = System.Windows.MessageBox;
-using WpfColorConverter = System.Windows.Media.ColorConverter;
-using WpfPoint = System.Windows.Point;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
 using System.Windows.Threading;
 
 namespace PatchcordInstaller;
@@ -81,6 +75,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (string.IsNullOrWhiteSpace(_searchText)) return true;
         if (obj is not InstallEntry entry) return true;
         return entry.Label.Contains(_searchText, StringComparison.OrdinalIgnoreCase)
+            || entry.Version.Contains(_searchText, StringComparison.OrdinalIgnoreCase)
             || entry.StatusLabel.Contains(_searchText, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -102,56 +97,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         Txt_FooterVersion.Text = $"v{GetCurrentVersion().ToString(3)}";
         RefreshClients();
+        RefreshProcesses();
         _procTimer.Start();
         await CheckForUpdatesAsync();
     }
 
     // ── Navigation ────────────────────────────────────────────────────────────
-
-    private void TitleBar_MouseDown(object sender, MouseButtonEventArgs e)
-    {
-        if (e.ChangedButton != MouseButton.Left) return;
-        if (e.ClickCount == 2) { ToggleMaximize(); return; }
-
-        // Maximized windows shouldn't be dragged directly; restore first so the
-        // cursor lands at a sane spot on the now-smaller window, matching native behavior.
-        if (WindowState == WindowState.Maximized)
-        {
-            var mouse = PointToScreen(e.GetPosition(this));
-            WindowState = WindowState.Normal;
-            Left = mouse.X - (RestoreBounds.Width / 2);
-            Top = mouse.Y - 20;
-        }
-        DragMove();
-    }
-
-    private void Btn_Close_Click(object sender, RoutedEventArgs e) => WpfApplication.Current.Shutdown();
-    private void Btn_Min_Click(object sender, RoutedEventArgs e)   => WindowState = WindowState.Minimized;
-    private void Btn_Max_Click(object sender, RoutedEventArgs e)   => ToggleMaximize();
-
-    private void ToggleMaximize()
-        => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
-
-    private void Window_StateChanged(object sender, EventArgs e)
-    {
-        if (WindowState == WindowState.Maximized)
-        {
-            // AllowsTransparency windows overhang the screen edges by the window
-            // border/margin when maximized; pull that back in and square off the
-            // corners so the content isn't clipped by the monitor bounds.
-            WindowRoot.Margin = new Thickness(7);
-            WindowRoot.CornerRadius = new CornerRadius(0);
-            WindowShadow.Opacity = 0;
-            MaxIcon.Data = Geometry.Parse("M6,4H4V22H20V4H6M18,20H6V6H18V20M8,8H16V16H8V8Z");
-        }
-        else
-        {
-            WindowRoot.Margin = new Thickness(12);
-            WindowRoot.CornerRadius = new CornerRadius(20);
-            WindowShadow.Opacity = 0.75;
-            MaxIcon.Data = Geometry.Parse("M4,4H20V20H4V4M6,8V18H18V8H6Z");
-        }
-    }
 
     private void Nav_Changed(object sender, RoutedEventArgs e)
     {
@@ -219,24 +170,27 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         LastPatchedStr = lastPatched > DateTime.MinValue ? lastPatched.ToString("g") : "Never";
 
         Txt_EmptyState.Visibility = Clients.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        CB_SelectAll.IsChecked = false;
+        CB_SelectAll.IsChecked = Clients.Count > 0 && Clients.All(entry => entry.IsSelected);
         _clientsView.Refresh();
     }
 
     private static string? FindLatestAppDir(string baseDir)
     {
+        if (!Directory.Exists(baseDir)) return null;
+
         try
         {
-            var dirs = Directory.GetDirectories(baseDir, "app-*")
-                .Where(d => System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(d), @"^app-\d+\.\d+\.\d+$"))
-                .OrderByDescending(d =>
-                {
-                    var parts = Path.GetFileName(d)[4..].Split('.').Select(int.Parse).ToArray();
-                    return parts[0] * 1_000_000 + parts[1] * 1_000 + parts[2];
-                }).ToList();
-            return dirs.FirstOrDefault();
+            return Directory.EnumerateDirectories(baseDir, "app-*")
+                .Where(dir => File.Exists(Path.Combine(dir, "resources", "app.asar")))
+                .Select(dir => (Path: dir, Version: Version.TryParse(Path.GetFileName(dir)[4..], out var version)
+                    ? version : null))
+                .Where(candidate => candidate.Version is { Build: >= 0, Revision: -1 })
+                .OrderByDescending(candidate => candidate.Version)
+                .Select(candidate => candidate.Path)
+                .FirstOrDefault();
         }
-        catch { return null; }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
     }
 
     private static InstallEntry BuildEntry(string label, string resDir)
@@ -256,13 +210,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return status switch
         {
             "patchcord"     => new InstallEntry { Label = label, ResourcesDir = resDir, Status = status, IsSelected = false,
-                StatusLabel = "Patchcord", BadgeBg = BrushOf(0x0C, 0x2A, 0x1A), BadgeFg = BrushOf(0x22, 0xC5, 0x5E) },
+                StatusLabel = "Patchcord" },
             "vencord"       => new InstallEntry { Label = label, ResourcesDir = resDir, Status = status, IsSelected = false,
-                StatusLabel = "Vencord", BadgeBg = BrushOf(0x2D, 0x0C, 0x0C), BadgeFg = BrushOf(0xEF, 0x44, 0x44) },
+                StatusLabel = "Vencord" },
             "betterdiscord" => new InstallEntry { Label = label, ResourcesDir = resDir, Status = status, IsSelected = false,
-                StatusLabel = "BetterDiscord", BadgeBg = BrushOf(0x2D, 0x1E, 0x08), BadgeFg = BrushOf(0xF5, 0x9E, 0x0B) },
+                StatusLabel = "BetterDiscord" },
             _               => new InstallEntry { Label = label, ResourcesDir = resDir, Status = status, IsSelected = true,
-                StatusLabel = "Clean", BadgeBg = BrushOf(0x27, 0x27, 0x2A), BadgeFg = BrushOf(0x71, 0x71, 0x7A) },
+                StatusLabel = "Clean" },
         };
     }
 
@@ -287,7 +241,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         catch { return "unreadable"; }
     }
 
-    private static SolidColorBrush BrushOf(byte r, byte g, byte b) => new(Color.FromRgb(r, g, b));
 
     // ── Process Manager ───────────────────────────────────────────────────────
 
@@ -461,22 +414,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var asarPath   = Path.Combine(resDir, "app.asar");
         var backupPath = Path.Combine(resDir, "_app.asar");
 
-        if (File.Exists(backupPath))
-        {
-            LogAdd("INFO", "Existing backup found, cleaning before repatch.", Color.FromRgb(0x38, 0xBD, 0xF8));
-            if (File.Exists(asarPath)) File.Delete(asarPath);
-            var backupKind = InspectAsar(backupPath);
-            if (backupKind != "vanilla" && backupKind != "unreadable") TryCleanAsar(resDir, backupPath);
-        }
-        else
-        {
-            if (!File.Exists(asarPath)) throw new FileNotFoundException($"app.asar not found in {resDir}");
-            var kind = InspectAsar(asarPath);
-            if (kind != "vanilla" && kind != "unreadable") TryCleanAsar(resDir, asarPath);
-            File.Move(asarPath, backupPath);
-        }
+        if (!File.Exists(asarPath))
+            throw new FileNotFoundException($"Discord's app.asar is missing from {resDir}. Refresh the client list and try again.", asarPath);
 
-        File.Copy(downloadedAsar, asarPath, overwrite: true);
+        var stagedPath = Path.Combine(resDir, $"patchcord-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            File.Copy(downloadedAsar, stagedPath);
+            var hasBackup = File.Exists(backupPath);
+            var originalPath = hasBackup ? backupPath : asarPath;
+            var kind = InspectAsar(originalPath);
+            if (kind != "vanilla" && kind != "unreadable") TryCleanAsar(resDir, originalPath);
+            File.Replace(stagedPath, asarPath, hasBackup ? null : backupPath);
+        }
+        finally
+        {
+            try { File.Delete(stagedPath); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
     }
 
     private void TryCleanAsar(string resDir, string asarPath)
@@ -500,8 +456,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var backupPath = Path.Combine(resDir, "_app.asar");
 
         if (!File.Exists(backupPath)) throw new FileNotFoundException("No _app.asar backup found.");
-        if (File.Exists(asarPath)) File.Delete(asarPath);
-        File.Move(backupPath, asarPath);
+        File.Move(backupPath, asarPath, overwrite: true);
     }
 
     // ── Auto-Updater ──────────────────────────────────────────────────────────
@@ -696,10 +651,9 @@ public class InstallEntry : INotifyPropertyChanged
 {
     public required string Label { get; set; }
     public required string ResourcesDir { get; set; }
+    public string Version => Path.GetFileName(Path.GetDirectoryName(ResourcesDir))?[4..] ?? "";
     public required string Status { get; set; }
     public required string StatusLabel { get; set; }
-    public SolidColorBrush? BadgeBg { get; set; }
-    public SolidColorBrush? BadgeFg { get; set; }
 
     private bool _isSelected;
     public bool IsSelected
